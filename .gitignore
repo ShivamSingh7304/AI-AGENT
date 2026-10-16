@@ -14,3 +14,5 @@ wheels/
 */logs/
 logs/
 **/core/
+data/
+vector_store/
