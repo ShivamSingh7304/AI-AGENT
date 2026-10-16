@@ -11,3 +11,6 @@ wheels/
 */__pycache__/
 .env
 */.env
+*/logs/
+logs/
+**/core/
