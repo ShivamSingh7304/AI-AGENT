@@ -4,3 +4,4 @@ langchain-community
 langchain-groq
 langgraph 
 python-dotenv
+streamlit>=1.50.0

@@ -1,5 +1,6 @@
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 from langchain.tools import tool
@@ -15,30 +16,37 @@ PROJECT_ROOT = Path(__file__).resolve().parents[5]
 INDEX_PATH = PROJECT_ROOT / "vector_store" / "faiss_index"
 
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_K = 4
+DEFAULT_K = 3
 
 
+@lru_cache(maxsize=1)
+def get_embeddings() -> HuggingFaceEmbeddings:
+    """Load and reuse the embedding model."""
+    logger.info("Loading embedding model: %s", EMBEDDING_MODEL)
+
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+    )
+
+
+@lru_cache(maxsize=1)
 def load_vector_store() -> FAISS:
-    """Load the persisted FAISS index from disk."""
+    """Load and reuse the persisted FAISS index."""
+    index_file = INDEX_PATH / "index.faiss"
 
-    if not (INDEX_PATH / "index.faiss").is_file():
+    if not index_file.is_file():
         raise FileNotFoundError(
             f"FAISS index not found at {INDEX_PATH}. "
             "Run indexing.py first."
         )
 
-    logger.info("Loading embedding model: %s", EMBEDDING_MODEL)
-
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-    )
+    embeddings = get_embeddings()
 
     logger.info("Loading FAISS index: %s", INDEX_PATH)
 
     vector_store = FAISS.load_local(
         str(INDEX_PATH),
         embeddings,
-        # Only load indexes that you created and trust.
         allow_dangerous_deserialization=True,
     )
 
@@ -60,7 +68,6 @@ def search_pdf(query: str) -> str:
     Args:
         query: A specific question or search query about the PDF.
     """
-
     if not query.strip():
         return "Please provide a non-empty search query."
 
@@ -75,7 +82,6 @@ def search_pdf(query: str) -> str:
         )
 
         if not results:
-            logger.info("No matching PDF chunks found")
             return "No relevant information was found in the indexed PDF."
 
         formatted_results = []
@@ -108,11 +114,7 @@ if __name__ == "__main__":
 
     try:
         question = input("Ask a question about the indexed PDF: ")
-
-        result = search_pdf.invoke({"query": question})
-
-        print("\nRetrieval results:\n")
-        print(result)
+        print(search_pdf.invoke({"query": question}))
 
     except Exception:
         logger.exception("Retrieval test failed")
