@@ -20,7 +20,7 @@ from ai_agent.tools.file_read_write.file import (
 from ai_agent.tools.rag.ingestion.retrieval import search_pdf
 from ai_agent.tools.websearch.web_search import web_search
 from ai_agent.tools.weather.weather_search import get_weather
-
+from ai_agent.tools.image_gen.image import generate_image_tool
 # --------------------------------------------------
 # Configuration
 # --------------------------------------------------
@@ -29,7 +29,7 @@ setup_logging()
 
 logger = logging.getLogger(__name__)
 
-MAX_HISTORY_MESSAGES = 30
+MAX_HISTORY_MESSAGES = 5
 
 # --------------------------------------------------
 # Load SOUL.md
@@ -85,6 +85,7 @@ tools = [
     search_pdf,
     web_search,
     get_weather,
+    generate_image_tool
 ]
 
 

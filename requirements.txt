@@ -5,3 +5,10 @@ langchain-groq
 langgraph 
 python-dotenv
 streamlit>=1.50.0
+faiss-cpu
+gradio
+fonttools
+tavily
+pypdf 
+sentence-transformer
+langchain-huggingface

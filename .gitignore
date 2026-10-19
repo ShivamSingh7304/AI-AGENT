@@ -16,3 +16,4 @@ logs/
 **/core/
 data/
 vector_store/
+uv.lock
