@@ -81,13 +81,13 @@ def generate_image(
         result = client.predict(
             prompt=prompt,
             refs=[],
-            size_label="1:1 · 1024×1024 (1024² area)",
+            size_label="1:1 · 512×512 (512² area)",
             seed=0,
             randomize_seed=True,
             enhance="Auto",
             steps=6,
-            custom_width=1024,
-            custom_height=1024,
+            custom_width=512,
+            custom_height=512,
             version="v0.3",
             api_name="/generate",
         )

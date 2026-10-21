@@ -16,4 +16,4 @@ logs/
 **/core/
 data/
 vector_store/
-uv.lock
+generated_images/

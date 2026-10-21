@@ -65,7 +65,8 @@ try:
     llm = ChatGroq(
         model="openai/gpt-oss-120b",
         temperature=0.3,
-        max_retries=2,
+        max_retries=5,
+        timeout=60,
     )
 
     logger.info("LLM initialized successfully")
