@@ -57,6 +57,24 @@ def is_image_request(prompt: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def is_text_request(prompt: str) -> bool:
+    """Identify writing requests that should accompany image generation."""
+
+    lowered = prompt.lower().strip()
+    markers = (
+        "write ",
+        "tell me ",
+        "describe ",
+        "explain ",
+        "give me ",
+        "create a story",
+        "compose ",
+        "summarize ",
+    )
+
+    return any(marker in lowered for marker in markers)
+
+
 def should_run_pdf_retrieval(prompt: str) -> bool:
     """Determine whether a question likely refers to the indexed PDF."""
 
@@ -388,13 +406,40 @@ def main() -> None:
         st.markdown(prompt)
 
     # --------------------------------------------------
-    # Direct image-generation route
-    # No Groq agent call for image requests.
+    # Generate an image directly; also answer any writing request in the prompt.
     # --------------------------------------------------
 
     if is_image_request(prompt):
         with st.chat_message("assistant"):
             try:
+                text_answer = None
+
+                if is_text_request(prompt):
+                    from ai_agent.agent.agent import (
+                        extract_final_answer,
+                        llm,
+                    )
+
+                    with st.spinner("Writing your response..."):
+                        text_response = llm.invoke(
+                            [
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "Answer only the text-writing part "
+                                        "of the user's request. Do not "
+                                        "generate or describe an image; the "
+                                        "application handles that separately. "
+                                        "Honor requested word counts exactly."
+                                    ),
+                                },
+                                {"role": "user", "content": prompt},
+                            ]
+                        )
+
+                    text_answer = extract_final_answer([text_response])
+                    st.markdown(text_answer)
+
                 from ai_agent.tools.image_gen.image import (
                     generate_image_tool,
                 )
@@ -412,26 +457,33 @@ def main() -> None:
                 image_path = extract_image_path(tool_result)
 
                 if image_path:
-                    answer = "Here is your generated image."
-                    st.markdown(answer)
+                    if text_answer is None:
+                        st.markdown("Here is your generated image.")
 
                     st.image(
                         image_path,
                         caption="Generated image",
-                        use_container_width=True,
+                        width=320,
                     )
                 else:
                     # The tool may have returned a quota or API error.
-                    answer = tool_result
-                    st.markdown(answer)
+                    st.error(tool_result)
 
                 assistant_message = {
                     "role": "assistant",
-                    "content": answer,
+                    "content": text_answer or (
+                        "Here is your generated image."
+                        if image_path
+                        else tool_result
+                    ),
                 }
 
                 if image_path:
                     assistant_message["image_path"] = image_path
+                elif text_answer:
+                    assistant_message["content"] += (
+                        f"\n\nImage generation failed: {tool_result}"
+                    )
 
                 st.session_state.chat_history.append(
                     assistant_message
@@ -439,7 +491,7 @@ def main() -> None:
 
             except Exception as exc:
                 error_message = (
-                    "Image generation failed. "
+                    "Could not complete your request. "
                     f"Details: {exc}"
                 )
 

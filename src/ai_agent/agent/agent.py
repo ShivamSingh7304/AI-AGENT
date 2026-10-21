@@ -5,6 +5,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_groq import ChatGroq
+from langchain.agents.middleware import SummarizationMiddleware
+
 
 from ai_agent.core.logging_config import setup_logging
 
@@ -65,8 +67,9 @@ try:
     llm = ChatGroq(
         model="openai/gpt-oss-120b",
         temperature=0.3,
-        max_retries=5,
+        max_retries=3,
         timeout=60,
+        max_tokens=1024,
     )
 
     logger.info("LLM initialized successfully")
@@ -98,6 +101,13 @@ try:
         model=llm,
         tools=tools,
         system_prompt=soul_prompt,
+        middleware=[
+        SummarizationMiddleware(
+            model=llm,
+            trigger=("tokens", 6000),
+            keep=("messages", 3),
+        )
+    ],
     )
 
     logger.info("Agent created successfully")
