@@ -29,23 +29,28 @@ def get_embeddings() -> HuggingFaceEmbeddings:
     )
 
 
-@lru_cache(maxsize=1)
-def load_vector_store() -> FAISS:
-    """Load and reuse the persisted FAISS index."""
-    index_file = INDEX_PATH / "index.faiss"
+@lru_cache(maxsize=16)
+def load_vector_store(index_path: str | Path | None = None) -> FAISS:
+    """Load and reuse the persisted FAISS index at the requested path."""
+    selected_index_path = (
+        Path(index_path).expanduser().resolve()
+        if index_path is not None
+        else INDEX_PATH
+    )
+    index_file = selected_index_path / "index.faiss"
 
     if not index_file.is_file():
         raise FileNotFoundError(
-            f"FAISS index not found at {INDEX_PATH}. "
+            f"FAISS index not found at {selected_index_path}. "
             "Run indexing.py first."
         )
 
     embeddings = get_embeddings()
 
-    logger.info("Loading FAISS index: %s", INDEX_PATH)
+    logger.info("Loading FAISS index: %s", selected_index_path)
 
     vector_store = FAISS.load_local(
-        str(INDEX_PATH),
+        str(selected_index_path),
         embeddings,
         allow_dangerous_deserialization=True,
     )
@@ -56,6 +61,41 @@ def load_vector_store() -> FAISS:
     )
 
     return vector_store
+
+
+def search_pdf_index(query: str, index_path: str | Path) -> str:
+    """Search one session's PDF index and format its matching passages."""
+    if not query.strip():
+        logger.warning("Rejected empty PDF retrieval query")
+        return "Please provide a non-empty search query."
+
+    logger.info("Searching PDF index: %s", index_path)
+    try:
+        vector_store = load_vector_store(index_path)
+        results = vector_store.similarity_search(query=query, k=DEFAULT_K)
+    except Exception:
+        logger.exception("PDF search failed for index: %s", index_path)
+        raise
+    if not results:
+        logger.info("No relevant passages found in PDF index: %s", index_path)
+        return "No relevant information was found in the indexed PDF."
+
+    formatted_results = []
+    for index, document in enumerate(results, start=1):
+        source = document.metadata.get("source", "Unknown source")
+        page = document.metadata.get("page", "Unknown page")
+        formatted_results.append(
+            f"Result {index}\n"
+            f"Source: {source}\n"
+            f"Page: {page}\n"
+            f"Content:\n{document.page_content}"
+        )
+    logger.info(
+        "PDF search returned %d passages from index %s",
+        len(results),
+        index_path,
+    )
+    return "\n\n---\n\n".join(formatted_results)
 
 
 @tool
@@ -71,35 +111,12 @@ def search_pdf(query: str) -> str:
     if not query.strip():
         return "Please provide a non-empty search query."
 
-    logger.info("Searching indexed PDF for: %s", query)
+    logger.info("Searching the default indexed PDF")
 
     try:
-        vector_store = load_vector_store()
-
-        results = vector_store.similarity_search(
-            query=query,
-            k=DEFAULT_K,
-        )
-
-        if not results:
-            return "No relevant information was found in the indexed PDF."
-
-        formatted_results = []
-
-        for index, document in enumerate(results, start=1):
-            source = document.metadata.get("source", "Unknown source")
-            page = document.metadata.get("page", "Unknown page")
-
-            formatted_results.append(
-                f"Result {index}\n"
-                f"Source: {source}\n"
-                f"Page: {page}\n"
-                f"Content:\n{document.page_content}"
-            )
-
-        logger.info("PDF search completed: %d results", len(results))
-
-        return "\n\n---\n\n".join(formatted_results)
+        result = search_pdf_index(query, INDEX_PATH)
+        logger.info("PDF search completed")
+        return result
 
     except Exception:
         logger.exception("PDF retrieval failed")

@@ -1,0 +1,1 @@
+"""PostgreSQL persistence for chat sessions, messages, PDFs, and images."""

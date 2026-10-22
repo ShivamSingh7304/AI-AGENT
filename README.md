@@ -71,6 +71,17 @@ pip install -e .
 
 > If a tool does not require a given key, it can be left unset.
 
+For chat persistence, create a Neon PostgreSQL project and copy its connection
+string into `DATABASE_URL` in `.env`. Use the connection string provided by
+Neon (including its password); do not commit `.env`. This app connects through
+Neon's PostgreSQL wire protocol using SQLAlchemy and psycopg.
+
+Run the initial schema migration before starting the app:
+
+```bash
+alembic upgrade head
+```
+
 ## Running the app
 
 Start the Streamlit interface from the project root:
@@ -118,6 +129,16 @@ The agent is guided by the rules in `SOUL.md`, which define:
 - The FAISS index is stored under `vector_store/faiss_index`.
 - Logs are written to the `logs/agent.log` file.
 - Some tools may require API keys and internet access to work correctly.
+- Chat sessions, messages, PDF metadata, and generated-image paths are stored
+  in Neon PostgreSQL. Each chat has separate FAISS indexes for its PDFs, while
+  PDF files, FAISS indexes, and generated images remain on the app's local
+  filesystem. Back up those files separately; moving the app to another host
+  requires moving them or using shared/object storage.
+- Existing PDFs indexed into the old shared FAISS index must be uploaded and
+  indexed again so the new session-specific index and database references can
+  be created.
+- The saved-session picker is not user authentication. Do not expose this app
+  to untrusted users until access control is added.
 
 ## License
 

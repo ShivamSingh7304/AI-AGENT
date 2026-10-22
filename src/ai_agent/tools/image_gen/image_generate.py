@@ -5,6 +5,7 @@ import shutil
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from gradio_client import Client
@@ -49,18 +50,21 @@ def get_client() -> Client:
 
 def generate_image(
     prompt: str,
-    output_name: str = "generated_image.png",
+    output_name: str | None = None,
 ) -> Path:
     """
     Generate an image through the public Hugging Face Space
     and save it locally.
     """
 
-    logger.info("Starting image generation for prompt: %s", prompt)
+    logger.info("Starting image generation")
 
     if not prompt or not prompt.strip():
         logger.error("Image generation rejected: empty prompt")
         raise ValueError("Prompt cannot be empty.")
+
+    if output_name is None:
+        output_name = f"generated_{uuid4().hex}.png"
 
     if Path(output_name).name != output_name:
         logger.error("Image generation rejected: invalid output_name: %s", output_name)
@@ -92,13 +96,16 @@ def generate_image(
             api_name="/generate",
         )
     except Exception:
-        logger.exception("Image generation request failed for prompt: %s", prompt)
+        logger.exception("Image generation request failed")
         raise
 
-    logger.info("Received result from Space for prompt: %s", prompt)
+    logger.info("Received image-generation response")
 
     if not isinstance(result, (tuple, list)) or not result:
-        logger.error("Unexpected image response from Space: %r", result)
+        logger.error(
+            "Unexpected image response type from Space: %s",
+            type(result).__name__,
+        )
         raise RuntimeError(
             f"Unexpected response from Space: {result!r}"
         )
@@ -126,6 +133,10 @@ def generate_image(
             )
 
     else:
+        logger.error(
+            "Unexpected image result type: %s",
+            type(image_info).__name__,
+        )
         raise TypeError(
             "Unexpected image result type: "
             f"{type(image_info).__name__}. "
@@ -135,7 +146,11 @@ def generate_image(
     # Save the image locally.
     try:
         if image_path and Path(image_path).is_file():
-            logger.info("Copying generated image from local path %s to %s", image_path, destination)
+            logger.info(
+                "Copying generated image from local path %s to %s",
+                image_path,
+                destination,
+            )
             shutil.copy2(image_path, destination)
 
         elif image_url:
@@ -145,7 +160,10 @@ def generate_image(
                 logger.error("Returned image URL is invalid: %s", image_url)
                 raise RuntimeError("The returned image URL is invalid.")
 
-            logger.info("Downloading generated image from %s", image_url)
+            logger.info(
+                "Downloading generated image from host %s",
+                parsed_url.hostname,
+            )
 
             request = urllib.request.Request(
                 image_url,
@@ -156,7 +174,10 @@ def generate_image(
                 content_type = response.headers.get("Content-Type", "")
 
                 if not content_type.startswith("image/"):
-                    logger.error("Returned URL did not provide an image: %s", content_type)
+                    logger.error(
+                        "Returned URL did not provide an image: %s",
+                        content_type,
+                    )
                     raise RuntimeError(
                         "The returned URL did not provide an image. "
                         f"Content-Type: {content_type}"
@@ -165,13 +186,16 @@ def generate_image(
                 destination.write_bytes(response.read())
 
         else:
-            logger.error("No accessible image path or URL was returned: %r", image_info)
+            logger.error(
+                "No accessible image path or URL was returned "
+                "(result type: %s)",
+                type(image_info).__name__,
+            )
             raise RuntimeError(
-                "No accessible image path or URL was returned.\n"
-                f"Image result: {image_info!r}"
+                "No accessible image path or URL was returned."
             )
     except Exception:
-        logger.exception("Failed while saving generated image for prompt: %s", prompt)
+        logger.exception("Failed while saving generated image")
         raise
 
     logger.info("Image saved successfully: %s", destination.resolve())
@@ -192,8 +216,8 @@ if __name__ == "__main__":
             )
         )
 
-        print(f"Done: {saved_image}")
+        logger.info("Image generation CLI completed: %s", saved_image)
 
     except Exception as exc:
-        print(f"Image generation failed: {exc}")
+        logger.exception("Image generation CLI failed: %s", exc)
         raise

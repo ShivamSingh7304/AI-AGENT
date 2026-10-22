@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -18,7 +20,23 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from ai_agent.tools.rag.ingestion.retrieval import INDEX_PATH, search_pdf
+from ai_agent.core.logging_config import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
+
+from ai_agent.agent.database.repository import (
+    add_document_to_session,
+    attach_document_to_message,
+    create_session,
+    get_session_messages,
+    list_session_documents,
+    list_sessions,
+    save_message,
+    set_active_document,
+)
+from ai_agent.tools.rag.ingestion.indexing import get_pdf_index_path
+from ai_agent.tools.rag.ingestion.retrieval import search_pdf_index
 
 
 # --------------------------------------------------
@@ -140,6 +158,9 @@ def render_chat_message(message: dict) -> None:
 
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+
+        for document in message.get("documents", []):
+            st.caption(f"RAG source: {document['filename']}")
 
         image_path = message.get("image_path")
 
@@ -276,14 +297,30 @@ def main() -> None:
     # Session state
     # --------------------------------------------------
 
-    if "agent_messages" not in st.session_state:
-        st.session_state.agent_messages = []
-
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
-    def index_exists() -> bool:
-        return (INDEX_PATH / "index.faiss").is_file()
+    try:
+        session_rows = list_sessions()
+        if not session_rows:
+            st.session_state.session_id = create_session()
+            logger.info(
+                "Created initial chat session: %s",
+                st.session_state.session_id,
+            )
+        elif st.session_state.get("session_id") not in {
+            row["id"] for row in session_rows
+        }:
+            st.session_state.session_id = session_rows[0]["id"]
+            logger.info(
+                "Selected most recent chat session: %s",
+                st.session_state.session_id,
+            )
+    except Exception as exc:
+        logger.exception("Could not initialize saved Neon chat sessions")
+        st.error(
+            "Could not load saved chats from Neon. Check DATABASE_URL, "
+            "network access, and that `alembic upgrade head` has been run. "
+            f"Details: {exc}"
+        )
+        st.stop()
 
     # --------------------------------------------------
     # Sidebar
@@ -302,12 +339,101 @@ def main() -> None:
 
         st.title("AI Agent")
         st.divider()
+        st.subheader("Saved chats")
+
+        if st.button("New chat", use_container_width=True):
+            try:
+                st.session_state.session_id = create_session()
+                st.session_state.pop("session_picker", None)
+                logger.info(
+                    "Created new chat session: %s",
+                    st.session_state.session_id,
+                )
+                st.rerun()
+            except Exception as exc:
+                logger.exception("Could not create a new chat session")
+                st.error(f"Could not create a new chat: {exc}")
+
+        session_rows = list_sessions()
+        session_labels = {
+            row["id"]: row["title"] for row in session_rows
+        }
+        session_ids = list(session_labels)
+        current_session_index = session_ids.index(
+            st.session_state.session_id
+        )
+        selected_session_id = st.selectbox(
+            "Reopen a chat",
+            options=session_ids,
+            index=current_session_index,
+            format_func=lambda session_id: session_labels[session_id],
+            key="session_picker",
+        )
+        st.session_state.session_id = selected_session_id
+        logger.debug("Active chat session: %s", selected_session_id)
+
         st.subheader("PDF knowledge")
 
-        if index_exists():
-            st.success("Index ready")
+        session_documents = list_session_documents(selected_session_id)
+        active_document = next(
+            (
+                document
+                for document in session_documents
+                if document["is_active"]
+            ),
+            None,
+        )
+        document_ids = [None] + [
+            document["id"] for document in session_documents
+        ]
+        document_by_id = {
+            document["id"]: document for document in session_documents
+        }
+        active_document_id = (
+            active_document["id"] if active_document else None
+        )
+        selected_document_id = st.selectbox(
+            "PDF used for RAG",
+            options=document_ids,
+            index=document_ids.index(active_document_id),
+            format_func=lambda document_id: (
+                "No PDF selected"
+                if document_id is None
+                else document_by_id[document_id]["filename"]
+            ),
+            key=f"pdf_picker_{selected_session_id}",
+        )
+        if selected_document_id != active_document_id:
+            try:
+                set_active_document(
+                    selected_session_id,
+                    selected_document_id,
+                )
+                active_document_id = selected_document_id
+                active_document = document_by_id.get(selected_document_id)
+            except Exception as exc:
+                logger.exception(
+                    "Could not change active PDF for session %s",
+                    selected_session_id,
+                )
+                st.error(f"Could not select this PDF: {exc}")
+
+        if active_document is not None:
+            active_index_path = get_pdf_index_path(active_document["id"])
+            if (active_index_path / "index.faiss").is_file():
+                st.success(f"Index ready: {active_document['filename']}")
+            else:
+                logger.error(
+                    "FAISS index missing for document %s in session %s",
+                    active_document["id"],
+                    selected_session_id,
+                )
+                st.error(
+                    f"Index missing for {active_document['filename']}. "
+                    "Upload and index this PDF again."
+                )
         else:
-            st.info("No PDF indexed")
+            st.info("No PDF selected for this chat")
 
         uploaded_pdf = st.file_uploader(
             "Choose a PDF",
@@ -326,10 +452,11 @@ def main() -> None:
             safe_name = Path(uploaded_pdf.name).name
             upload_dir = PROJECT_ROOT / "data" / "uploads"
             upload_dir.mkdir(parents=True, exist_ok=True)
-
+            document_id = str(uuid4())
             upload_path = upload_dir / (
                 f"{uuid4().hex}_{safe_name}"
             )
+            index_path = get_pdf_index_path(document_id)
 
             try:
                 upload_path.write_bytes(uploaded_pdf.getvalue())
@@ -341,7 +468,7 @@ def main() -> None:
                         vector_stores,
                     )
 
-                    vector_stores(upload_path)
+                    vector_stores(upload_path, index_path=index_path)
 
                 from ai_agent.tools.rag.ingestion.retrieval import (
                     get_embeddings,
@@ -350,18 +477,57 @@ def main() -> None:
 
                 load_vector_store.cache_clear()
                 get_embeddings.cache_clear()
+                add_document_to_session(
+                    session_id=selected_session_id,
+                    document_id=document_id,
+                    filename=safe_name,
+                    file_path=str(upload_path.resolve()),
+                    index_path=str(index_path.resolve()),
+                )
 
+                logger.info(
+                    "Indexed PDF %s for chat session %s",
+                    safe_name,
+                    selected_session_id,
+                )
                 st.success(f"Indexed {uploaded_pdf.name}")
+                st.session_state.pop(
+                    f"pdf_picker_{selected_session_id}",
+                    None,
+                )
                 st.rerun()
 
             except Exception as exc:
+                logger.exception(
+                    "Could not index PDF %s for session %s",
+                    safe_name,
+                    selected_session_id,
+                )
                 upload_path.unlink(missing_ok=True)
+                if index_path.is_dir():
+                    shutil.rmtree(index_path)
                 st.error(f"Could not index the PDF: {exc}")
 
         st.caption(
-            "A new upload replaces the active index. "
-            "Source PDFs are kept in data/uploads."
+            "PDFs and their indexes are kept separately per chat. "
+            "Source PDFs are saved under data/uploads."
         )
+
+    try:
+        st.session_state.chat_history = get_session_messages(
+            st.session_state.session_id
+        )
+        st.session_state.agent_messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in st.session_state.chat_history
+        ]
+    except Exception as exc:
+        logger.exception(
+            "Could not load history for chat session %s",
+            st.session_state.session_id,
+        )
+        st.error(f"Could not load this chat's history: {exc}")
+        st.stop()
 
     # --------------------------------------------------
     # Main workspace
@@ -395,9 +561,26 @@ def main() -> None:
         return
 
     # Save and display the user's message.
+    try:
+        user_message_id = save_message(
+            st.session_state.session_id,
+            "user",
+            prompt,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Could not persist user message for session %s",
+            st.session_state.session_id,
+        )
+        st.error(f"Could not save your message to Neon: {exc}")
+        st.stop()
+    logger.info("Saved user message for session %s", st.session_state.session_id)
+
     user_message = {
+        "id": user_message_id,
         "role": "user",
         "content": prompt,
+        "documents": [],
     }
 
     st.session_state.chat_history.append(user_message)
@@ -485,11 +668,26 @@ def main() -> None:
                         f"\n\nImage generation failed: {tool_result}"
                     )
 
+                assistant_message["id"] = save_message(
+                    st.session_state.session_id,
+                    "assistant",
+                    assistant_message["content"],
+                    image_prompt=prompt if image_path else None,
+                    image_path=image_path,
+                )
+                logger.info(
+                    "Saved assistant response for session %s",
+                    st.session_state.session_id,
+                )
                 st.session_state.chat_history.append(
                     assistant_message
                 )
 
             except Exception as exc:
+                logger.exception(
+                    "Image request failed for chat session %s",
+                    st.session_state.session_id,
+                )
                 error_message = (
                     "Could not complete your request. "
                     f"Details: {exc}"
@@ -497,10 +695,17 @@ def main() -> None:
 
                 st.error(error_message)
 
+                error_message_id = save_message(
+                    st.session_state.session_id,
+                    "assistant",
+                    error_message,
+                )
                 st.session_state.chat_history.append(
                     {
+                        "id": error_message_id,
                         "role": "assistant",
                         "content": error_message,
+                        "documents": [],
                     }
                 )
 
@@ -514,7 +719,8 @@ def main() -> None:
     with st.chat_message("assistant"):
         try:
             from ai_agent.agent.agent import (
-                agent,
+                MAX_HISTORY_MESSAGES,
+                app_agent,
                 extract_final_answer,
                 trim_history,
             )
@@ -522,13 +728,31 @@ def main() -> None:
             question_content = prompt
 
             if (
-                index_exists()
+                active_document_id is not None
                 and should_run_pdf_retrieval(prompt)
             ):
                 with st.spinner("Searching the indexed PDF..."):
-                    retrieved_context = search_pdf.invoke(
-                        {"query": prompt}
+                    retrieved_context = search_pdf_index(
+                        prompt,
+                        get_pdf_index_path(active_document_id),
                     )
+                logger.info(
+                    "Retrieved PDF context for session %s using document %s",
+                    st.session_state.session_id,
+                    active_document_id,
+                )
+                attach_document_to_message(
+                    user_message_id,
+                    active_document_id,
+                )
+                user_message["documents"] = [
+                    {
+                        "id": active_document_id,
+                        "filename": document_by_id[
+                            active_document_id
+                        ]["filename"],
+                    }
+                ]
 
                 question_content = (
                     f"User question:\n{prompt}\n\n"
@@ -543,7 +767,7 @@ def main() -> None:
                 )
 
             request_messages = [
-                *st.session_state.agent_messages,
+                *st.session_state.agent_messages[-MAX_HISTORY_MESSAGES:],
                 {
                     "role": "user",
                     "content": question_content,
@@ -551,7 +775,7 @@ def main() -> None:
             ]
 
             with st.spinner("Thinking..."):
-                response = agent.invoke(
+                response = app_agent.invoke(
                     {"messages": request_messages}
                 )
 
@@ -568,14 +792,29 @@ def main() -> None:
 
             st.markdown(answer)
 
+            assistant_message_id = save_message(
+                st.session_state.session_id,
+                "assistant",
+                answer,
+            )
+            logger.info(
+                "Saved assistant response for session %s",
+                st.session_state.session_id,
+            )
             st.session_state.chat_history.append(
                 {
+                    "id": assistant_message_id,
                     "role": "assistant",
                     "content": answer,
+                    "documents": [],
                 }
             )
 
         except Exception as exc:
+            logger.exception(
+                "Agent request failed for chat session %s",
+                st.session_state.session_id,
+            )
             error_message = (
                 "I couldn't complete that request. Check your API "
                 "configuration and rate limits, then try again. "
@@ -584,10 +823,17 @@ def main() -> None:
 
             st.error(error_message)
 
+            error_message_id = save_message(
+                st.session_state.session_id,
+                "assistant",
+                error_message,
+            )
             st.session_state.chat_history.append(
                 {
+                    "id": error_message_id,
                     "role": "assistant",
                     "content": error_message,
+                    "documents": [],
                 }
             )
 

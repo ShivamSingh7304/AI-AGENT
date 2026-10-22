@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_groq import ChatGroq
 from langchain.agents.middleware import SummarizationMiddleware
+from langchain_core.tools import BaseTool
 
 
 from ai_agent.core.logging_config import setup_logging
@@ -93,25 +94,33 @@ tools = [
 ]
 
 
-# --------------------------------------------------
-# Create agent
-# --------------------------------------------------
-try:
-    agent = create_agent(
+def create_configured_agent(agent_tools: list[BaseTool]):
+    return create_agent(
         model=llm,
-        tools=tools,
+        tools=agent_tools,
         system_prompt=soul_prompt,
         middleware=[
-        SummarizationMiddleware(
-            model=llm,
-            trigger=("tokens", 6000),
-            keep=("messages", 3),
-        )
-    ],
+            SummarizationMiddleware(
+                model=llm,
+                trigger=("tokens", 6000),
+                keep=("messages", 3),
+            )
+        ],
     )
 
-    logger.info("Agent created successfully")
 
+# The Streamlit app performs retrieval against the session's selected PDF
+# before invoking the agent, so it must not also expose the global-index tool.
+try:
+    agent = create_configured_agent(tools)
+    app_agent = create_configured_agent(
+        [
+            registered_tool
+            for registered_tool in tools
+            if registered_tool.name != "search_pdf"
+        ]
+    )
+    logger.info("Agents created successfully")
 except Exception:
     logger.exception("Agent creation failed")
     raise
