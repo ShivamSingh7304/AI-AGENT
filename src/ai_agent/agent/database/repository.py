@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Iterator
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def _database_session(operation: str, *, write: bool = False) -> Iterator[Session]:
+def _database_session(
+    operation: str,
+    *,
+    write: bool = False,
+) -> Generator[Session, None, None]:
     """Log database failures consistently and preserve their exceptions."""
     try:
         factory = get_session_factory()
@@ -37,12 +41,54 @@ def _database_session(operation: str, *, write: bool = False) -> Iterator[Sessio
         raise
 
 
-def create_session() -> str:
+def create_session(title: str | None = None) -> str:
     session_id = str(uuid4())
     with _database_session("create chat session", write=True) as db:
-        db.add(SessionRecord(id=session_id))
+        db.add(SessionRecord(id=session_id, title=title))
     logger.info("Created chat session %s", session_id)
     return session_id
+
+
+def session_exists(session_id: str) -> bool:
+    with _database_session("check chat session") as db:
+        exists = db.scalar(
+            select(SessionRecord.id).where(SessionRecord.id == session_id)
+        )
+    return exists is not None
+
+
+def delete_session(session_id: str) -> list[str]:
+    """Delete a chat and return its local file paths for safe cleanup."""
+    with _database_session("delete chat session", write=True) as db:
+        chat_session = db.get(SessionRecord, session_id)
+        if chat_session is None:
+            raise ValueError(f"Chat session not found: {session_id}")
+
+        documents = db.execute(
+            select(Document.file_path, Document.index_path)
+            .join(SessionDocument, SessionDocument.document_id == Document.id)
+            .where(SessionDocument.session_id == session_id)
+        ).all()
+        message_ids = db.scalars(
+            select(Message.id).where(Message.session_id == session_id)
+        ).all()
+        image_paths = []
+        if message_ids:
+            image_paths = db.scalars(
+                select(GeneratedImage.file_path).where(
+                    GeneratedImage.message_id.in_(message_ids)
+                )
+            ).all()
+
+        db.delete(chat_session)
+
+    paths = [
+        path
+        for document in documents
+        for path in document
+    ] + image_paths
+    logger.info("Deleted chat session %s", session_id)
+    return paths
 
 
 def list_sessions() -> list[dict]:
@@ -127,6 +173,130 @@ def save_message(
         session_id,
     )
     return message_id
+
+
+def save_message_turn(
+    session_id: str,
+    user_content: str,
+    assistant_content: str,
+    *,
+    document_id: str | None = None,
+    image_prompt: str | None = None,
+    image_path: str | None = None,
+    turn_id: str | None = None,
+) -> tuple[str, str]:
+    if (image_prompt is None) != (image_path is None):
+        logger.error("Rejected incomplete generated image metadata")
+        raise ValueError("An image prompt and path must be provided together.")
+
+    turn_uuid = UUID(turn_id) if turn_id else uuid4()
+    user_message_id = str(turn_uuid)
+    assistant_message_id = str(uuid5(turn_uuid, "assistant"))
+
+    with _database_session("save complete chat turn", write=True) as db:
+        chat_session = db.scalar(
+            select(SessionRecord)
+            .where(SessionRecord.id == session_id)
+            .with_for_update()
+        )
+        if chat_session is None:
+            raise ValueError(f"Chat session not found: {session_id}")
+
+        existing_user = db.get(Message, user_message_id)
+        existing_assistant = db.get(Message, assistant_message_id)
+        if existing_user is not None or existing_assistant is not None:
+            existing_document_id = db.scalar(
+                select(MessageDocument.document_id).where(
+                    MessageDocument.message_id == user_message_id
+                )
+            )
+            existing_image = db.execute(
+                select(GeneratedImage.prompt, GeneratedImage.file_path).where(
+                    GeneratedImage.message_id == assistant_message_id
+                )
+            ).one_or_none()
+            if (
+                existing_user is not None
+                and existing_assistant is not None
+                and existing_user.session_id == session_id
+                and existing_assistant.session_id == session_id
+                and existing_user.role == "user"
+                and existing_user.content == user_content
+                and existing_assistant.role == "assistant"
+                and existing_assistant.content == assistant_content
+                and existing_document_id == document_id
+                and existing_image
+                == (
+                    (image_prompt, image_path)
+                    if image_prompt is not None and image_path is not None
+                    else None
+                )
+            ):
+                logger.info(
+                    "Chat turn %s was already saved for session %s",
+                    turn_uuid,
+                    session_id,
+                )
+                return user_message_id, assistant_message_id
+            raise ValueError("This turn ID is already used by another message.")
+
+        if document_id is not None and db.get(
+            SessionDocument,
+            (session_id, document_id),
+        ) is None:
+            raise ValueError("The PDF is not linked to this chat session.")
+
+        first_sequence = db.scalar(
+            select(func.coalesce(func.max(Message.sequence), 0) + 1).where(
+                Message.session_id == session_id
+            )
+        )
+        db.add_all(
+            [
+                Message(
+                    id=user_message_id,
+                    session_id=session_id,
+                    sequence=first_sequence,
+                    role="user",
+                    content=user_content,
+                ),
+                Message(
+                    id=assistant_message_id,
+                    session_id=session_id,
+                    sequence=first_sequence + 1,
+                    role="assistant",
+                    content=assistant_content,
+                ),
+            ]
+        )
+        db.flush()
+
+        if document_id is not None:
+            db.add(
+                MessageDocument(
+                    message_id=user_message_id,
+                    document_id=document_id,
+                )
+            )
+        if image_prompt is not None and image_path is not None:
+            db.add(
+                GeneratedImage(
+                    message_id=assistant_message_id,
+                    prompt=image_prompt,
+                    file_path=image_path,
+                )
+            )
+
+        if chat_session.title is None:
+            chat_session.title = user_content.strip()[:200] or "New conversation"
+        chat_session.updated_at = func.now()
+
+    logger.info(
+        "Saved complete chat turn %s for session %s",
+        turn_uuid,
+        session_id,
+    )
+    return user_message_id, assistant_message_id
 
 
 def get_session_messages(session_id: str) -> list[dict]:

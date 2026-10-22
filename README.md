@@ -84,27 +84,58 @@ alembic upgrade head
 
 ## Running the app
 
-Start the Streamlit interface from the project root:
+Start the API in one terminal from the project root:
 
 ```bash
-streamlit run app.py
+uv run uvicorn ai_agent.api.main:app --app-dir src --host 127.0.0.1 --port 8000
 ```
 
-This launches the chat UI where you can:
+The API initializes one shared agent when it starts. Chat history is still
+loaded separately for each session, so sessions do not share conversation
+messages.
+
+Then start the Streamlit interface in a second terminal:
+
+```bash
+uv run streamlit run app.py
+```
+
+The API documentation is available at `http://127.0.0.1:8000/docs`. The API
+binds to localhost by default; do not expose it to a network without adding
+authentication and deployment-appropriate upload controls.
+
+The Streamlit UI uses this API by default. Set `AI_AGENT_API_URL` in `.env` if
+you run the API at a different address.
+
+### API endpoints
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Check that the API is running |
+| `GET`, `POST` | `/sessions` | List or create chat sessions |
+| `DELETE` | `/sessions/{session_id}` | Delete a chat session and its managed files |
+| `GET`, `POST` | `/sessions/{session_id}/messages` | Read history or send a message |
+| `POST` | `/sessions/{session_id}/messages/stream` | Stream an agent reply as NDJSON |
+| `POST` | `/sessions/{session_id}/messages/persist` | Save the displayed user/assistant turn atomically |
+| `GET`, `POST` | `/sessions/{session_id}/documents` | List or upload/index PDFs |
+| `PATCH` | `/sessions/{session_id}/documents/active` | Choose the PDF used for RAG |
+
+The chat UI lets you:
 
 - ask questions to the agent
-- upload a PDF
-- build a FAISS index for the PDF
+- see your submitted message immediately and receive the assistant reply as it streams; both are saved atomically after the response is displayed
+- attach a PDF in the chat composer and build a session-specific FAISS index
 - ask document-grounded questions using retrieval
 - trigger image generation requests
 
 ## PDF RAG workflow
 
-1. Upload a PDF from the sidebar.
-2. Click “Build / replace index”.
-3. Ask questions related to the uploaded PDF.
-4. The app automatically performs retrieval when the question looks document-related.
-5. The retrieved passages are included as context before the agent answers.
+1. Attach a PDF from the `+` button in the chat composer. The API saves it,
+   builds a session-specific FAISS index, and selects it for that chat.
+2. To switch between PDFs already attached to the chat, use the sidebar's
+   **RAG source** selector.
+3. Ask a question about the PDF. The selected PDF is searched and relevant
+   passages are included as context for the agent's answer.
 
 ## Agent behavior
 

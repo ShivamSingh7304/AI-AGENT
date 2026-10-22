@@ -66,11 +66,12 @@ soul_prompt = load_system_prompt()
 # --------------------------------------------------
 try:
     llm = ChatGroq(
-        model="openai/gpt-oss-120b",
+        model="openai/gpt-oss-20b",
         temperature=0.3,
         max_retries=3,
         timeout=60,
-        max_tokens=1024,
+        max_tokens=2048,
+        streaming=True,
     )
 
     logger.info("LLM initialized successfully")
@@ -94,14 +95,17 @@ tools = [
 ]
 
 
-def create_configured_agent(agent_tools: list[BaseTool]):
+def create_configured_agent(
+    agent_tools: list[BaseTool],
+    model: ChatGroq = llm,
+):
     return create_agent(
-        model=llm,
+        model=model,
         tools=agent_tools,
         system_prompt=soul_prompt,
         middleware=[
             SummarizationMiddleware(
-                model=llm,
+                model=model,
                 trigger=("tokens", 6000),
                 keep=("messages", 3),
             )
@@ -112,13 +116,16 @@ def create_configured_agent(agent_tools: list[BaseTool]):
 # The Streamlit app performs retrieval against the session's selected PDF
 # before invoking the agent, so it must not also expose the global-index tool.
 try:
+    app_tools = [
+        registered_tool
+        for registered_tool in tools
+        if registered_tool.name != "search_pdf"
+    ]
     agent = create_configured_agent(tools)
-    app_agent = create_configured_agent(
-        [
-            registered_tool
-            for registered_tool in tools
-            if registered_tool.name != "search_pdf"
-        ]
+    app_agent = create_configured_agent(app_tools)
+    app_agent_non_streaming = create_configured_agent(
+        app_tools,
+        model=llm.model_copy(update={"streaming": False}),
     )
     logger.info("Agents created successfully")
 except Exception:

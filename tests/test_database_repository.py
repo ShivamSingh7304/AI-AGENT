@@ -14,6 +14,7 @@ from ai_agent.agent.database.repository import (
     list_session_documents,
     list_sessions,
     save_message,
+    save_message_turn,
     set_active_document,
 )
 
@@ -23,7 +24,7 @@ class DatabaseRepositoryTests(unittest.TestCase):
         self.engine = create_engine("sqlite:///:memory:")
 
         @event.listens_for(self.engine, "connect")
-        def enable_foreign_keys(connection, _record) -> None:
+        def enable_foreign_keys(connection, _) -> None:
             cursor = connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
@@ -103,6 +104,53 @@ class DatabaseRepositoryTests(unittest.TestCase):
         }
         self.assertTrue(documents[first_document_id]["is_active"])
         self.assertFalse(documents[second_document_id]["is_active"])
+
+    def test_saves_complete_turn_atomically_and_is_idempotent(self) -> None:
+        session_id = create_session()
+        document_id = str(uuid4())
+        add_document_to_session(
+            session_id,
+            document_id,
+            "report.pdf",
+            "data/uploads/report.pdf",
+            "vector_store/pdf_indexes/report",
+        )
+        turn_id = str(uuid4())
+
+        message_ids = save_message_turn(
+            session_id,
+            "Summarize the report",
+            "It describes the results.",
+            document_id=document_id,
+            image_prompt="A report illustration",
+            image_path="generated_images/report.png",
+            turn_id=turn_id,
+        )
+        retried_ids = save_message_turn(
+            session_id,
+            "Summarize the report",
+            "It describes the results.",
+            document_id=document_id,
+            image_prompt="A report illustration",
+            image_path="generated_images/report.png",
+            turn_id=turn_id,
+        )
+
+        messages = get_session_messages(session_id)
+        self.assertEqual(message_ids, retried_ids)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["user", "assistant"],
+        )
+        self.assertEqual(
+            messages[0]["documents"],
+            [{"id": document_id, "filename": "report.pdf"}],
+        )
+        self.assertEqual(
+            messages[1]["image_path"],
+            "generated_images/report.png",
+        )
 
 
 if __name__ == "__main__":
