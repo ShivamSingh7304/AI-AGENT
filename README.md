@@ -97,6 +97,12 @@ localhost; the tools can access files in the user's Desktop directory. Configure
 `AI_AGENT_FILE_MCP_URL` in `.env` if needed. The MCP server must be running
 before the agent API starts.
 
+The MCP server writes JSON-RPC request/response records to
+`logs/mcp_jsonrpc.jsonl`, separately from `logs/agent.log`. Each line is a JSON
+record, including the RPC method, request, response, and timestamp. Tool
+arguments and results are recorded as-is, so requests that read or write files
+may put their contents in this log. Protect it accordingly.
+
 Start the API in a second terminal from the project root:
 
 ```bash
