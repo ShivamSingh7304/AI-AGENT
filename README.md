@@ -84,7 +84,20 @@ alembic upgrade head
 
 ## Running the app
 
-Start the API in one terminal from the project root:
+Start the Desktop file MCP server in one terminal from the project root:
+
+```bash
+uv run ai-agent-file-mcp
+```
+
+It exposes the Desktop read/write/append tools at
+`http://127.0.0.1:8001/mcp` using Streamable HTTP. Keep this server bound to
+localhost; the tools can access files in the user's Desktop directory. Configure
+`AI_AGENT_FILE_MCP_HOST`, `AI_AGENT_FILE_MCP_PORT`, or
+`AI_AGENT_FILE_MCP_URL` in `.env` if needed. The MCP server must be running
+before the agent API starts.
+
+Start the API in a second terminal from the project root:
 
 ```bash
 uv run uvicorn ai_agent.api.main:app --app-dir src --host 127.0.0.1 --port 8000
@@ -94,7 +107,7 @@ The API initializes one shared agent when it starts. Chat history is still
 loaded separately for each session, so sessions do not share conversation
 messages.
 
-Then start the Streamlit interface in a second terminal:
+Then start the Streamlit interface in a third terminal:
 
 ```bash
 uv run streamlit run app.py

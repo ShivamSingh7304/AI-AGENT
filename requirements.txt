@@ -1,4 +1,4 @@
-langchain 
+langchain[mcp]>=1.4.6
 langchain-core
 langchain-community
 langchain-groq

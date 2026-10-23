@@ -1,25 +1,24 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import time
 import logging
 from pathlib import Path
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_groq import ChatGroq
 from langchain.agents.middleware import SummarizationMiddleware
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, StructuredTool
 
 
 from ai_agent.core.logging_config import setup_logging
+from ai_agent.tools.file_read_write.file import get_file_mcp_url
 
 # --------------------------------------------------
 # Tools
 # --------------------------------------------------
-from ai_agent.tools.file_read_write.file import (
-    read_desktop_file,
-    write_desktop_file,
-    append_desktop_file,
-)
-
 from ai_agent.tools.rag.ingestion.retrieval import search_pdf
 from ai_agent.tools.websearch.web_search import web_search
 from ai_agent.tools.weather.weather_search import get_weather
@@ -33,6 +32,55 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 MAX_HISTORY_MESSAGES = 5
+ResultT = TypeVar("ResultT")
+
+
+def _run_async(
+    awaitable_factory: Callable[[], Coroutine[Any, Any, ResultT]],
+) -> ResultT:
+    """Run an async MCP operation from the agent's synchronous tool path."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable_factory())
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(
+            lambda: asyncio.run(awaitable_factory())
+        ).result()
+
+
+async def _discover_file_mcp_tools() -> list[BaseTool]:
+    from langchain.mcp import MCPAdapter
+
+    async with MCPAdapter(get_file_mcp_url()) as adapter:
+        return await adapter.list_tools()
+
+
+def _as_synchronous_tool(mcp_tool: BaseTool) -> StructuredTool:
+    """Bridge async MCP tools for the agent's existing sync execution path."""
+
+    def invoke(**arguments: Any) -> str:
+        result = _run_async(lambda: mcp_tool.ainvoke(arguments))
+        if isinstance(result, str):
+            return result
+        if isinstance(result, list):
+            text_parts = [
+                block["text"]
+                for block in result
+                if isinstance(block, dict)
+                and isinstance(block.get("text"), str)
+            ]
+            if text_parts:
+                return "\n".join(text_parts)
+        return str(result)
+
+    return StructuredTool.from_function(
+        func=invoke,
+        name=mcp_tool.name,
+        description=mcp_tool.description,
+        args_schema=mcp_tool.args_schema,
+    )
 
 # --------------------------------------------------
 # Load SOUL.md
@@ -84,10 +132,24 @@ except Exception:
 # --------------------------------------------------
 # Register tools
 # --------------------------------------------------
+try:
+    file_tools = [
+        _as_synchronous_tool(mcp_tool)
+        for mcp_tool in _run_async(_discover_file_mcp_tools)
+    ]
+    logger.info(
+        "Connected to Desktop File MCP server at %s",
+        get_file_mcp_url(),
+    )
+except Exception:
+    logger.exception(
+        "Could not connect to Desktop File MCP server at %s",
+        get_file_mcp_url(),
+    )
+    raise
+
 tools = [
-    read_desktop_file,
-    write_desktop_file,
-    append_desktop_file,
+    *file_tools,
     search_pdf,
     web_search,
     get_weather,

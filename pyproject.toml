@@ -10,7 +10,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "fonttools>=4.67.0",
     "gradio-client>=2.7.2",
-    "langchain>=1.4.6",
+    "langchain[mcp]>=1.4.6",
     "langchain-community>=0.4.2",
     "langchain-core>=1.6.11",
     "langchain-groq>=1.1.3",
@@ -30,6 +30,7 @@ dependencies = [
 
 [project.scripts]
 ai-agent = "ai_agent:main"
+ai-agent-file-mcp = "ai_agent.tools.file_read_write.file:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
