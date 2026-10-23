@@ -71,12 +71,15 @@ pip install -e .
 
 > If a tool does not require a given key, it can be left unset.
 
-For chat persistence, create a Neon PostgreSQL project and copy its connection
-string into `DATABASE_URL` in `.env`. Use the connection string provided by
-Neon (including its password); do not commit `.env`. This app connects through
-Neon's PostgreSQL wire protocol using SQLAlchemy and psycopg.
+Chat persistence uses a local SQLite database at `data/ai_agent.db` by default.
+The database file is created when migrations are run. This local database is
+intended for a single app instance on one machine. To use PostgreSQL instead,
+set `AI_AGENT_DATABASE_BACKEND=postgresql` and `DATABASE_URL` in `.env` to a
+PostgreSQL connection string; Neon URLs are supported. Keep credentials in
+`.env` and do not commit them. Existing Neon data is not copied to SQLite; the
+new local database starts empty and the Neon database remains unchanged.
 
-Run the initial schema migration before starting the app:
+Run the schema migration before starting the app:
 
 ```bash
 alembic upgrade head
@@ -180,7 +183,8 @@ The agent is guided by the rules in `SOUL.md`, which define:
 - Logs are written to the `logs/agent.log` file.
 - Some tools may require API keys and internet access to work correctly.
 - Chat sessions, messages, PDF metadata, and generated-image paths are stored
-  in Neon PostgreSQL. Each chat has separate FAISS indexes for its PDFs, while
+  in `data/ai_agent.db` by default (or in the configured PostgreSQL database).
+  Each chat has separate FAISS indexes for its PDFs, while
   PDF files, FAISS indexes, and generated images remain on the app's local
   filesystem. Back up those files separately; moving the app to another host
   requires moving them or using shared/object storage.

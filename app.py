@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from time import perf_counter
 from uuid import uuid4
 import streamlit as st
 # --------------------------------------------------# Project setup# --------------------------------------------------
@@ -106,6 +107,7 @@ def process_chat_input(session_id: str) -> None:
         if not prompt:
             return
         turn_id = str(uuid4())
+        turn_started_at = perf_counter()
         completed_turn = {}
         with st.chat_message("assistant"):
             thinking_placeholder = st.empty()
@@ -167,6 +169,9 @@ def process_chat_input(session_id: str) -> None:
 
                 "image_path": image_path,
             }
+            persistence_started_at = perf_counter()
+            save_status = st.empty()
+            save_status.caption("Answer shown. Saving to chat history…")
             try:
                 api_client.persist_message_turn(
                     session_id,
@@ -177,10 +182,12 @@ def process_chat_input(session_id: str) -> None:
                     image_path=image_path,
                 )
                 logger.info(
-                    "Persisted displayed chat turn %s for session %s",
+                    "Persisted displayed chat turn %s for session %s in %.3fs",
                     turn_id,
                     session_id,
+                    perf_counter() - persistence_started_at,
                 )
+                save_status.caption("Saved to chat history.")
             except api_client.APIClientError as exc:
                 logger.exception(
                     "Could not save displayed chat turn %s",
@@ -191,8 +198,13 @@ def process_chat_input(session_id: str) -> None:
                 st.session_state.setdefault("pending_turns", {})[
                     session_id
                 ] = persist_request
+                save_status.empty()
                 show_pending_save(session_id, persist_request)
-        logger.info("Completed API chat turn for session %s", session_id)
+        logger.info(
+            "Completed UI chat turn for session %s in %.3fs",
+            session_id,
+            perf_counter() - turn_started_at,
+        )
     except api_client.APIClientError as exc:
         logger.exception("Chat API request failed for session %s", session_id)
         st.error(str(exc))

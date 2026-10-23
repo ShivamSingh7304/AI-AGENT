@@ -3,12 +3,12 @@ from pathlib import Path
 from uuid import UUID
 
 from ai_agent.core.logging_config import setup_logging
+from ai_agent.tools.rag.ingestion.retrieval import get_embeddings
 
 logger = logging.getLogger(__name__)
 
 from ai_agent.tools.rag.ingestion.loading import ingest_pdf
 
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 
@@ -62,13 +62,7 @@ def vector_stores(
         logger.exception("Text splitting failed")
         raise
     try:
-        logger.info(
-            "Initializing embedding model: "
-            "sentence-transformers/all-MiniLM-L6-v2"
-        )
-        embedding_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
+        embedding_model = get_embeddings()
     except Exception:
         logger.exception("Embedding model initialization failed")
         raise

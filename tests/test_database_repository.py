@@ -78,6 +78,13 @@ class DatabaseRepositoryTests(unittest.TestCase):
             messages[1]["image_path"],
             "generated_images/landscape.png",
         )
+        self.assertEqual(
+            [
+                message["content"]
+                for message in get_session_messages(session_id, limit=1)
+            ],
+            ["Here is the generated image."],
+        )
         self.assertEqual(list_sessions()[0]["title"], "Summarize this PDF")
         self.assertTrue(list_session_documents(session_id)[0]["is_active"])
 

@@ -299,13 +299,22 @@ def save_message_turn(
     return user_message_id, assistant_message_id
 
 
-def get_session_messages(session_id: str) -> list[dict]:
+def get_session_messages(
+    session_id: str,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
     with _database_session("load chat messages") as db:
-        messages = db.scalars(
-            select(Message)
-            .where(Message.session_id == session_id)
-            .order_by(Message.sequence)
-        ).all()
+        message_query = select(Message).where(Message.session_id == session_id)
+        if limit is None:
+            message_query = message_query.order_by(Message.sequence)
+        else:
+            message_query = (
+                message_query.order_by(Message.sequence.desc()).limit(limit)
+            )
+        messages = db.scalars(message_query).all()
+        if limit is not None:
+            messages.reverse()
         if not messages:
             logger.debug("No messages found for chat session %s", session_id)
             return []

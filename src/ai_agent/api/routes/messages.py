@@ -1,9 +1,10 @@
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -43,6 +44,17 @@ RAG_MARKERS = (
     "source",
     "summarize",
 )
+ReadResultT = TypeVar("ReadResultT")
+
+
+def _timed_read(
+    read: Callable[..., ReadResultT],
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[ReadResultT, float]:
+    started_at = perf_counter()
+    result = read(*args, **kwargs)
+    return result, perf_counter() - started_at
 
 
 def _message_text(content: Any) -> str:
@@ -66,7 +78,26 @@ def _message_turn_events(
     turn_started_at = perf_counter()
     first_token_logged = False
     try:
-        documents = list_session_documents(session_id)
+        from ai_agent.agent.agent import MAX_HISTORY_MESSAGES, app_agent
+
+        with ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="chat-context",
+        ) as executor:
+            documents_future = executor.submit(
+                _timed_read,
+                list_session_documents,
+                session_id,
+            )
+            history_future = executor.submit(
+                _timed_read,
+                get_session_messages,
+                session_id,
+                limit=MAX_HISTORY_MESSAGES,
+            )
+            documents, documents_lookup_seconds = documents_future.result()
+            history, history_seconds = history_future.result()
+
         active_document = next(
             (
                 document
@@ -89,6 +120,7 @@ def _message_turn_events(
         should_retrieve = bool(request.document_id) or any(
             marker in prompt.casefold() for marker in RAG_MARKERS
         )
+        retrieval_started_at = perf_counter()
         if active_document and should_retrieve:
             retrieved_context = search_pdf_index(
                 prompt,
@@ -113,16 +145,27 @@ def _message_turn_events(
                 active_document["id"],
                 session_id,
             )
+        retrieval_seconds = perf_counter() - retrieval_started_at
 
-        from ai_agent.agent.agent import MAX_HISTORY_MESSAGES, app_agent
-
-        history = get_session_messages(session_id)
         prior_messages = [
             {"role": message["role"], "content": message["content"]}
-            for message in history[-MAX_HISTORY_MESSAGES:]
+            for message in history
         ]
         answer_parts: list[str] = []
         tool_outputs: list[str] = []
+        model_started_at = perf_counter()
+        logger.info(
+            "Chat preparation timings for session %s: documents_lookup=%.3fs "
+            "pdf_retrieval=%.3fs history_load=%.3fs total_before_model=%.3fs "
+            "history_messages=%d pdf_retrieved=%s",
+            session_id,
+            documents_lookup_seconds,
+            retrieval_seconds,
+            history_seconds,
+            model_started_at - turn_started_at,
+            len(prior_messages),
+            bool(linked_documents),
+        )
         response_stream = app_agent.stream(
             {
                 "messages": [
@@ -144,8 +187,10 @@ def _message_turn_events(
                 if message_type in {"ai", "aimessagechunk"} and content:
                     if not first_token_logged:
                         logger.info(
-                            "First agent text chunk for session %s after %.2f seconds",
+                            "First agent text chunk for session %s: "
+                            "model_wait=%.3fs total_since_request=%.3fs",
                             session_id,
+                            perf_counter() - model_started_at,
                             perf_counter() - turn_started_at,
                         )
                         first_token_logged = True
@@ -169,6 +214,7 @@ def _message_turn_events(
             )
             from ai_agent.agent.agent import app_agent_non_streaming
 
+            fallback_started_at = perf_counter()
             fallback_result = app_agent_non_streaming.invoke(
                 {
                     "messages": [
@@ -197,8 +243,11 @@ def _message_turn_events(
                     answer_parts.append(fallback_answer)
                     if not first_token_logged:
                         logger.info(
-                            "First agent text chunk for session %s after %.2f seconds",
+                            "First agent text chunk for session %s after "
+                            "non-streaming fallback: fallback_wait=%.3fs "
+                            "total_since_request=%.3fs",
                             session_id,
+                            perf_counter() - fallback_started_at,
                             perf_counter() - turn_started_at,
                         )
                         first_token_logged = True
@@ -220,9 +269,11 @@ def _message_turn_events(
                 break
 
         logger.info(
-            "Generated response for session %s in %.2f seconds",
+            "Agent generation timings for session %s: total=%.3fs "
+            "model_stream=%.3fs",
             session_id,
             perf_counter() - turn_started_at,
+            perf_counter() - model_started_at,
         )
         yield {
             "type": "done",
@@ -280,16 +331,23 @@ def _persist_generated_turn(
         )
 
     document = None
+    document_validation_seconds = 0.0
     if request.document_id is not None:
+        validation_started_at = perf_counter()
         try:
-            document = next(
-                (
-                    item
-                    for item in list_session_documents(session_id)
-                    if item["id"] == request.document_id
-                ),
-                None,
-            )
+            try:
+                document = next(
+                    (
+                        item
+                        for item in list_session_documents(session_id)
+                        if item["id"] == request.document_id
+                    ),
+                    None,
+                )
+            finally:
+                document_validation_seconds = (
+                    perf_counter() - validation_started_at
+                )
         except Exception as exc:
             logger.exception(
                 "Could not validate the PDF for session %s",
@@ -323,6 +381,7 @@ def _persist_generated_turn(
                 detail="The image path is not a managed generated image.",
             )
 
+    persistence_started_at = perf_counter()
     try:
         user_message_id, assistant_message_id = save_message_turn(
             session_id,
@@ -349,6 +408,13 @@ def _persist_generated_turn(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The response was generated but could not be saved.",
         ) from exc
+    logger.info(
+        "Chat persistence timings for session %s: document_validation=%.3fs "
+        "database_save=%.3fs",
+        session_id,
+        document_validation_seconds,
+        perf_counter() - persistence_started_at,
+    )
 
     return MessageTurnResponse(
         user_message=MessageResponse(

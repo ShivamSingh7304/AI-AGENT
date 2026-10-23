@@ -98,6 +98,7 @@ def upgrade() -> None:
         ["session_id"],
         unique=True,
         postgresql_where=sa.text("is_active"),
+        sqlite_where=sa.text("is_active"),
     )
     op.create_table(
         "message_documents",

@@ -20,10 +20,6 @@ from ai_agent.tools.rag.ingestion.indexing import (
     get_pdf_index_path,
     vector_stores,
 )
-from ai_agent.tools.rag.ingestion.retrieval import (
-    get_embeddings,
-    load_vector_store,
-)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sessions/{session_id}/documents", tags=["documents"])
@@ -45,8 +41,6 @@ def _index_pdf_bytes(
     try:
         upload_path.write_bytes(contents)
         vector_stores(upload_path, index_path=index_path)
-        load_vector_store.cache_clear()
-        get_embeddings.cache_clear()
         add_document_to_session(
             session_id=session_id,
             document_id=document_id,

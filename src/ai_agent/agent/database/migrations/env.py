@@ -34,7 +34,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    logger.info("Connecting to PostgreSQL to run database migrations")
+    logger.info("Connecting to the configured database to run migrations")
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
